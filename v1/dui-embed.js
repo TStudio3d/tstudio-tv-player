@@ -7,9 +7,14 @@
   load / play / pause / seek / volume / sync / stop commands.
 
     const p = await TvEmbed.create('youtube', '<videoId>', container,
-        { position, playing, volume, loop }, { loaded(duration|null), ended(), error(msg) })
+        { position, playing, volume, loop, current? }, { loaded(duration|null), ended(), error(msg) })
     p.play(pos) · p.pause(pos) · p.seek(pos) · p.setVolume(0..1) · p.currentTime()
     p.duration() · p.isPaused() · p.live · p.destroy()
+
+  The promise resolves as soon as the player exists; commands before the
+  player is ready are dropped. `current()` (optional) returns
+  { position, playing, volume } and is read when the player becomes ready, so
+  it starts where the server timeline is by then, not where it was at load.
 
   Both embeds need the page to have a real web origin (the hosted copy of this
   page, see Config.Media.playerUrl): YouTube refuses embeds without a referer
@@ -57,6 +62,12 @@
     return ytPromise
   }
 
+  // What the player should do right now (read when it becomes ready).
+  function currentOf(opts) {
+    const c = typeof opts.current === 'function' ? opts.current() : null
+    return c && typeof c === 'object' ? c : opts
+  }
+
   async function createYouTube(container, mediaId, opts, events) {
     const YT = await ensureYouTube()
     const el = document.createElement('div')
@@ -68,49 +79,58 @@
       autoplay: 1, controls: 0, disablekb: 1, rel: 0, modestbranding: 1,
       playsinline: 1, iv_load_policy: 3, fs: 0, enablejsapi: 1,
     }
-    if (isWebOrigin) vars.origin = location.origin
+    if (isWebOrigin) { vars.origin = location.origin; vars.widget_referrer = location.href }
+    if (opts.position > 1) vars.start = Math.floor(opts.position)
     if (opts.loop) { vars.loop = 1; vars.playlist = mediaId }
 
-    const player = new YT.Player(el, {
-      width: '100%', height: '100%', videoId: mediaId, host: 'https://www.youtube.com',
-      playerVars: vars,
-      events: {
-        onReady: (e) => {
-          try {
-            e.target.setVolume(Math.round(clamp01(opts.volume) * 100))
-            if (opts.position > 0) e.target.seekTo(opts.position, true)
-            if (opts.playing) e.target.playVideo(); else e.target.pauseVideo()
-          } catch (err) { events.error('youtube: ' + (err && err.message)) }
-        },
-        onStateChange: (e) => {
-          if (e.data === YT.PlayerState.PLAYING && !loadedReported) {
-            loadedReported = true
-            let d = 0
-            try { d = e.target.getDuration() } catch (err) { d = 0 }
-            events.loaded(d > 0 ? d : null)
-          }
-          if (e.data === YT.PlayerState.ENDED && !opts.loop) events.ended()
-        },
-        onError: (e) => {
-          const codes = { 2: 'invalid video id', 5: 'player error', 100: 'video not found', 101: 'embedding disabled by the owner', 150: 'embedding disabled by the owner', 153: 'embed refused (page needs a web origin)' }
-          events.error('youtube: ' + (codes[e.data] || ('error ' + e.data)))
-        },
-      },
-    })
-
     const safe = (fn, fallback) => { try { return fn() } catch (err) { return fallback } }
-    return {
+    let player = null
+    const api = {
       provider: 'youtube',
-      live: false,
-      play: (pos) => safe(() => { if (typeof pos === 'number') player.seekTo(pos, true); player.playVideo() }),
-      pause: (pos) => safe(() => { player.pauseVideo(); if (typeof pos === 'number') player.seekTo(pos, true) }),
-      seek: (pos) => safe(() => player.seekTo(pos, true)),
-      setVolume: (v) => safe(() => player.setVolume(Math.round(clamp01(v) * 100))),
+      live: false, // set once the stream reports itself as live (no seeking then)
+      play: (pos) => safe(() => { if (typeof pos === 'number' && !api.live) player.seekTo(pos, true); player.playVideo() }),
+      pause: (pos) => safe(() => { player.pauseVideo(); if (typeof pos === 'number' && !api.live) player.seekTo(pos, true) }),
+      seek: (pos) => safe(() => { if (!api.live) player.seekTo(pos, true) }),
+      setVolume: (v) => safe(() => {
+        player.setVolume(Math.round(clamp01(v) * 100))
+        if (v > 0 && player.isMuted()) player.unMute()
+      }),
       currentTime: () => safe(() => player.getCurrentTime() || 0, 0),
       duration: () => safe(() => player.getDuration() || 0, 0),
       isPaused: () => safe(() => player.getPlayerState() !== YT.PlayerState.PLAYING, true),
       destroy: () => { safe(() => player.destroy()); if (el.parentNode) el.parentNode.removeChild(el) },
     }
+
+    player = new YT.Player(el, {
+      width: '100%', height: '100%', videoId: mediaId, host: 'https://www.youtube.com',
+      playerVars: vars,
+      events: {
+        onReady: (e) => {
+          try {
+            const cur = currentOf(opts)
+            e.target.unMute() // the player remembers a mute per origin; we never want one
+            e.target.setVolume(Math.round(clamp01(cur.volume) * 100))
+            if (cur.position > 1) e.target.seekTo(cur.position, true)
+            if (cur.playing) e.target.playVideo(); else e.target.pauseVideo()
+          } catch (err) { events.error('youtube: ' + (err && err.message)) }
+        },
+        onStateChange: (e) => {
+          if (e.data === YT.PlayerState.PLAYING && !loadedReported) {
+            loadedReported = true
+            safe(() => { const vd = e.target.getVideoData(); if (vd && vd.isLive) api.live = true })
+            let d = 0
+            if (!api.live) d = safe(() => e.target.getDuration(), 0)
+            events.loaded(d > 0 ? d : null)
+          }
+          if (e.data === YT.PlayerState.ENDED && !opts.loop && !api.live) events.ended()
+        },
+        onError: (e) => {
+          const codes = { 2: 'invalid video id', 5: 'player error', 100: 'video not found or private', 101: 'embedding disabled by the owner', 150: 'embedding disabled by the owner', 152: 'video unavailable in embeds', 153: 'embed refused (page needs a web origin)' }
+          events.error('youtube: ' + (codes[e.data] || ('error ' + e.data)))
+        },
+      },
+    })
+    return api
   }
 
   // ── Twitch embed ────────────────────────────────────────────────────
@@ -151,9 +171,11 @@
     let loadedReported = false
     player.addEventListener(Twitch.Player.READY, () => {
       try {
+        const cur = currentOf(opts)
         player.setMuted(false)
-        player.setVolume(clamp01(opts.volume))
-        if (!opts.playing) player.pause()
+        player.setVolume(clamp01(cur.volume))
+        if (!live && Math.abs((cur.position || 0) - (opts.position || 0)) > 2) player.seek(cur.position)
+        if (!cur.playing) player.pause()
       } catch (err) { /* ignore */ }
     })
     player.addEventListener(Twitch.Player.PLAYING, () => {

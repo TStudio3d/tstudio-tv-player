@@ -9,7 +9,8 @@
    event.data is the parsed object, `type` (alias `action`) selects the handler:
      init     { resourceName, screenId, logo, showLogo, standbyText, standbySubtext, showStandby, driftTolerance }
               logo = Config.Branding.logo relative to html/ ('' = none); the texts are already resolved
-     load     { gen, url, name, kind: 'video'|'audio', position, playing, volume, loop }  (volume 0..1)
+     load     { gen, url, name, kind: 'video'|'audio', provider?, mediaId?, live?, position, playing, volume, loop }
+              (volume 0..1; provider 'youtube' | 'twitch' = embed through dui-embed.js)
      play     { position }        pause { position }        seek { position }
      volume   { value }           0..1 — already includes distance falloff + master volume
      sync     { position, playing }   re-seek when |currentTime - position| > driftTolerance
@@ -19,12 +20,19 @@
    applied in order as soon as `init` arrives.
 
    Page → Lua: POST https://<resourceName>/duiEvent  (RegisterNUICallback 'duiEvent')
-     { screenId, event, gen, duration?, error? }
-       ready    init handled
+     { screenId, event, gen, page, instance, nav, duration?, error? }
+       ready    init handled (sent for every init)
        loaded   metadata known (duration included when finite)
        ended    media finished (never while looping)
        error    media failed (short message in `error`)
+     page = 'local' (nui://) | 'remote' (the hosted copy, see Config.Media.playerUrl),
+     instance = random id of this document, nav = the navigation number Lua put
+     in the URL fragment (#nav=N). A browser that navigates keeps the old
+     document alive for a moment; Lua uses these fields to ignore it.
    Reports are fire-and-forget: every fetch is wrapped and can never throw.
+   A `load` for the item that is already loaded (same gen + same media) only
+   adopts position / play state / volume: Lua re-sends the whole state after
+   every page (re)start, and that must never restart a running video.
 
    Views: STAGE   = the single full-bleed <video> on black (plays audio files too)
           AUDIO   = now-playing card + visualizer, covers the stage for kind 'audio'
@@ -72,7 +80,15 @@
     embed: null,        // TvEmbed player (YouTube / Twitch) while one is loaded
     embedToken: 0,      // ignores a player that finishes creating after a newer load/stop
     provider: null,
+    key: null,          // identity of the loaded item (see mediaKey)
+    failed: null,       // key of the item that failed at this gen (a repeated load keeps the error)
+    want: null,         // { pos, at, playing }: where an embed that is still creating should be
   };
+  // Which page this is and which document: Lua tells a page it navigated away
+  // from (still alive until the new one commits) from the page it shows now.
+  const SERVED_BY_GAME = location.protocol === 'nui:' || /^cfx-nui-/i.test(location.hostname || '');
+  const PAGE_KIND = SERVED_BY_GAME ? 'local' : 'remote';
+  const INSTANCE = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   const embedStage = document.getElementById('embed');
   let pending = [];     // { type, msg } received before init
 
@@ -95,14 +111,23 @@
   const visCss = $('visCss');
 
   // ── Reporting back to Lua ─────────────────────────────────────────────────
+  // Navigation number Lua put in the URL (#nav=N). Read on every report: a
+  // fragment-only navigation keeps this document but changes the number.
+  function navId() {
+    const m = /[#&]nav=(\d+)/.exec(location.hash || '');
+    return m ? Number(m[1]) : null;
+  }
+
   function report(event, extra) {
     if (!cfg.resourceName) return;
-    const body = { screenId: cfg.screenId, event, gen: state.gen };
+    const body = { screenId: cfg.screenId, event, gen: state.gen, page: PAGE_KIND, instance: INSTANCE, nav: navId() };
     if (extra) Object.assign(body, extra);
     try {
       fetch('https://' + cfg.resourceName + '/duiEvent', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // The hosted copy posts cross-origin: text/plain keeps it a simple
+        // request (no preflight). FiveM parses the body as JSON either way.
+        headers: { 'Content-Type': PAGE_KIND === 'remote' ? 'text/plain;charset=UTF-8' : 'application/json' },
         body: JSON.stringify(body),
       }).catch(noop);
     } catch (e) { /* never throw */ }
@@ -229,6 +254,7 @@
 
   function unload() {
     state.url = null;
+    state.key = null;
     state.pendingSeek = null;
     state.playing = false;
     try { video.pause(); } catch (e) { /* ignore */ }
@@ -241,10 +267,23 @@
     if (state.embed) { try { state.embed.destroy(); } catch (e) { /* ignore */ } }
     state.embed = null;
     state.provider = null;
+    state.key = null;
+    state.want = null;
     state.embedToken = Math.abs(state.embedToken) + 1; // invalidates a pending create
   }
 
-  function loadEmbed(m) {
+  // Where an embed should be: anchored on the last command, advancing while
+  // playing. A player that is still starting reads it when it becomes ready.
+  function wantAt(pos, playing) {
+    state.want = { pos: Math.max(0, num(pos, 0)), at: performance.now(), playing: !!playing };
+  }
+  function wantedPos() {
+    const w = state.want;
+    if (!w) return 0;
+    return w.pos + (w.playing ? (performance.now() - w.at) / 1000 : 0);
+  }
+
+  function loadEmbed(m, key) {
     destroyEmbed();
     unload();
     clearError();
@@ -253,20 +292,24 @@
     state.name = str(m.name, '');
     state.playing = typeof m.playing === 'boolean' ? m.playing : true;
     state.provider = str(m.provider, '');
+    state.key = key;
+    wantAt(m.position, state.playing);
     applyVolume(num(m.volume, state.volume));
     const token = -(Math.abs(state.embedToken) + 1);
-    state.embedToken = token; // negative while creating
+    state.embedToken = token; // negative while creating and while it lives
     render();
     const fail = (msg) => {
-      if (state.embedToken !== token && state.embed === null) return; // superseded
+      if (state.embedToken !== token) return; // superseded by a newer load / stop
       destroyEmbed();
+      state.failed = key;
       state.error = 'Error — ' + msg;
       render();
       report('error', { error: msg });
     };
     if (!window.TvEmbed) { fail('embed module missing'); return; }
     window.TvEmbed.create(state.provider, str(m.mediaId, ''), embedStage, {
-      position: Math.max(0, num(m.position, 0)), playing: state.playing, volume: state.volume, loop: !!m.loop,
+      position: wantedPos(), playing: state.playing, volume: state.volume, loop: !!m.loop,
+      current: () => ({ position: wantedPos(), playing: state.playing, volume: state.volume }),
     }, {
       loaded: (d) => { if (state.embedToken === token) report('loaded', isNum(d) && d > 0 ? { duration: d } : null); },
       ended: () => { if (state.embedToken === token) report('ended'); },
@@ -278,8 +321,29 @@
     }).catch((err) => fail(err && err.message ? err.message : 'embed failed'));
   }
 
+  // Identity of a loaded item. Embeds include `loop`: switching it needs a new player.
+  function mediaKey(m) {
+    if (m.provider === 'youtube' || m.provider === 'twitch') {
+      return m.provider + ':' + str(m.mediaId, '') + (m.loop ? ':loop' : '');
+    }
+    return 'url:' + str(m.url, '');
+  }
+
+  // The same item again: adopt volume, loop and play state / position only.
+  function adopt(m) {
+    applyVolume(num(m.volume, state.volume));
+    if (!state.provider) video.loop = !!m.loop;
+    doSync({ position: m.position, playing: m.playing });
+  }
+
   function doLoad(m) {
-    if (m.provider === 'youtube' || m.provider === 'twitch') { loadEmbed(m); return; }
+    const key = mediaKey(m);
+    if (isNum(m.gen) && m.gen === state.gen) {
+      if (key === state.failed) return;                                   // failed here already; the error line stays
+      if (key === state.key && (state.url || state.provider)) { adopt(m); return; }
+    }
+    state.failed = null;
+    if (m.provider === 'youtube' || m.provider === 'twitch') { loadEmbed(m, key); return; }
     if (state.embed || state.embedToken < 0) destroyEmbed();
     const url = str(m.url, '');
     if (!url) return;
@@ -288,6 +352,7 @@
     clearError();
     state.gen = num(m.gen, state.gen);
     state.url = url;
+    state.key = key;
     state.kind = m.kind === 'audio' ? 'audio' : 'video';
     state.name = str(m.name, '');
     state.playing = typeof m.playing === 'boolean' ? m.playing : true;
@@ -301,11 +366,13 @@
   }
 
   function doSync(m) {
-    if (state.embed) {
+    if (state.provider) {
+      if (typeof m.playing === 'boolean') state.playing = m.playing;
+      if (isNum(m.position)) wantAt(m.position, state.playing);
       const p = state.embed;
+      if (!p) return; // still starting: it picks up `want` when ready
       if (!p.live && isNum(m.position) && Math.abs(p.currentTime() - m.position) > cfg.driftTolerance) p.seek(m.position);
       if (typeof m.playing === 'boolean') {
-        state.playing = m.playing;
         if (m.playing && p.isPaused()) p.play(); else if (!m.playing && !p.isPaused()) p.pause();
       }
       return;
@@ -325,6 +392,7 @@
   function doStop() {
     destroyEmbed();
     unload();
+    state.failed = null;
     // Keep an error line readable for a moment after the server stops the broken item.
     if (state.error && !state.errorTimer) {
       state.errorTimer = setTimeout(() => { state.errorTimer = 0; state.error = null; render(); }, 8000);
@@ -339,8 +407,10 @@
     if (el !== video || !state.url || !err || err.code === 1) return; // stale element, unloading, or abort noise
     let msg = MEDIA_ERRORS[err.code] || 'playback error';
     if (err.message) msg += ': ' + String(err.message).slice(0, 72);
+    const failedKey = state.key;
     unload();
     clearError();
+    state.failed = failedKey;
     state.error = 'Error — ' + msg;
     render();
     report('error', { error: msg });
@@ -495,15 +565,29 @@
     switch (type) {
       case 'load':   doLoad(m); break;
       case 'play':
+        if (state.provider) {
+          wantAt(isNum(m.position) ? m.position : wantedPos(), true);
+          state.playing = true;
+          if (state.embed) state.embed.play(isNum(m.position) ? m.position : undefined);
+          break;
+        }
         state.playing = true;
-        if (state.embed) { state.embed.play(isNum(m.position) ? m.position : undefined); break; }
         seekTo(m.position); tryPlay(); break;
       case 'pause':
+        if (state.provider) {
+          wantAt(isNum(m.position) ? m.position : wantedPos(), false);
+          state.playing = false;
+          if (state.embed) state.embed.pause(isNum(m.position) ? m.position : undefined);
+          break;
+        }
         state.playing = false;
-        if (state.embed) { state.embed.pause(isNum(m.position) ? m.position : undefined); break; }
         try { video.pause(); } catch (e) { /* ignore */ } seekTo(m.position); break;
       case 'seek':
-        if (state.embed) { if (!state.embed.live && isNum(m.position)) state.embed.seek(m.position); break; }
+        if (state.provider) {
+          if (isNum(m.position)) wantAt(m.position, state.playing);
+          if (state.embed && !state.embed.live && isNum(m.position)) state.embed.seek(m.position);
+          break;
+        }
         seekTo(m.position); break;
       case 'volume': applyVolume(m.value); break;
       case 'sync':   doSync(m); break;
