@@ -33,7 +33,7 @@
       s.src = src
       s.async = true
       s.onload = () => resolve()
-      s.onerror = () => reject(new Error('failed to load ' + src))
+      s.onerror = () => reject(new Error('the video player did not load'))
       document.head.appendChild(s)
     })
   }
@@ -56,7 +56,7 @@
         resolve(window.YT)
       }
       loadScript('https://www.youtube.com/iframe_api').catch(reject)
-      setTimeout(() => reject(new Error('YouTube player API did not load')), API_TIMEOUT_MS)
+      setTimeout(() => reject(new Error('the video player did not load')), API_TIMEOUT_MS)
     })
     ytPromise.catch(() => { ytPromise = null })
     return ytPromise
@@ -112,7 +112,7 @@
             e.target.setVolume(Math.round(clamp01(cur.volume) * 100))
             if (cur.position > 1) e.target.seekTo(cur.position, true)
             if (cur.playing) e.target.playVideo(); else e.target.pauseVideo()
-          } catch (err) { events.error('youtube: ' + (err && err.message)) }
+          } catch (err) { events.error((err && err.message) || 'player error') }
         },
         onStateChange: (e) => {
           if (e.data === YT.PlayerState.PLAYING && !loadedReported) {
@@ -126,7 +126,7 @@
         },
         onError: (e) => {
           const codes = { 2: 'invalid video id', 5: 'player error', 100: 'video not found or private', 101: 'embedding disabled by the owner', 150: 'embedding disabled by the owner', 152: 'video unavailable in embeds', 153: 'embed refused (page needs a web origin)' }
-          events.error('youtube: ' + (codes[e.data] || ('error ' + e.data)))
+          events.error(codes[e.data] || ('player error ' + e.data))
         },
       },
     })
@@ -141,9 +141,9 @@
       if (window.Twitch && window.Twitch.Player) { resolve(window.Twitch); return }
       loadScript('https://player.twitch.tv/js/embed/v1.js').then(() => {
         if (window.Twitch && window.Twitch.Player) resolve(window.Twitch)
-        else reject(new Error('Twitch player API did not initialise'))
+        else reject(new Error('the video player did not start'))
       }).catch(reject)
-      setTimeout(() => reject(new Error('Twitch player API did not load')), API_TIMEOUT_MS)
+      setTimeout(() => reject(new Error('the video player did not load')), API_TIMEOUT_MS)
     })
     twPromise.catch(() => { twPromise = null })
     return twPromise
@@ -166,7 +166,7 @@
     if (!live && opts.position > 0) options.time = Math.floor(opts.position) + 's'
 
     let player
-    try { player = new Twitch.Player(el, options) } catch (err) { events.error('twitch: ' + (err && err.message)); throw err }
+    try { player = new Twitch.Player(el, options) } catch (err) { events.error((err && err.message) || 'player error'); throw err }
 
     let loadedReported = false
     player.addEventListener(Twitch.Player.READY, () => {
@@ -186,7 +186,7 @@
       events.loaded(d > 0 ? d : null)
     })
     player.addEventListener(Twitch.Player.ENDED, () => { if (!live) events.ended() })
-    player.addEventListener(Twitch.Player.OFFLINE, () => { if (live) events.error('twitch: channel is offline') })
+    player.addEventListener(Twitch.Player.OFFLINE, () => { if (live) events.error('the stream is offline') })
 
     const safe = (fn, fallback) => { try { return fn() } catch (err) { return fallback } }
     return {
@@ -217,11 +217,11 @@
      */
     create(provider, mediaId, container, opts, events) {
       if (!isWebOrigin) {
-        return Promise.reject(new Error(provider + ' embeds need the hosted player page (Config.Media.playerUrl)'))
+        return Promise.reject(new Error('links need the online player page (Config.Media.playerUrl)'))
       }
       if (provider === 'youtube') return createYouTube(container, mediaId, opts, events)
       if (provider === 'twitch') return createTwitch(container, mediaId, opts, events)
-      return Promise.reject(new Error('unknown provider ' + provider))
+      return Promise.reject(new Error('unsupported link'))
     },
   }
 })()

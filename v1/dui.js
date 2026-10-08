@@ -86,8 +86,9 @@
   };
   // Which page this is and which document: Lua tells a page it navigated away
   // from (still alive until the new one commits) from the page it shows now.
-  const SERVED_BY_GAME = location.protocol === 'nui:' || /^cfx-nui-/i.test(location.hostname || '');
-  const PAGE_KIND = SERVED_BY_GAME ? 'local' : 'remote';
+  // 'local' = the built-in nui:// page; any http(s) copy (GitHub Pages, the FXServer,
+  // or the game-served https://cfx-nui-<resource>/ address) is the embed page.
+  const PAGE_KIND = location.protocol === 'nui:' ? 'local' : 'remote';
   const INSTANCE = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   const embedStage = document.getElementById('embed');
   let pending = [];     // { type, msg } received before init
