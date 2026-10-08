@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Television</title>
+  <link rel="stylesheet" href="./dui.css">
+</head>
+<body>
+  <!-- STAGE: the one media element. Full-bleed video on black; audio files play here too (covered by #audio). -->
+  <div id="stage" class="stage">
+    <video id="video" playsinline preload="auto"></video>
+    <div id="embed" class="embed" hidden></div>
+  </div>
+
+  <!-- AUDIO VIEW: now-playing card for kind === 'audio' (canvas bars when WebAudio works, CSS bars otherwise).
+       The art slot shows the configured logo (init.logo) or a generic music glyph. -->
+  <section id="audio" class="audio" hidden>
+    <div class="glow glow-a"></div>
+    <div class="glow glow-c"></div>
+    <div class="vignette"></div>
+    <div class="card">
+      <div class="art">
+        <img id="audioLogo" class="mark" alt="" hidden>
+        <svg id="audioGlyph" class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 18V5l12-2v13"/>
+          <circle cx="6" cy="18" r="3"/>
+          <circle cx="18" cy="16" r="3"/>
+        </svg>
+      </div>
+      <div class="meta">
+        <div class="label"><span class="dot"></span>Audio</div>
+        <div id="audioName" class="name">Audio</div>
+        <div id="audioTime" class="time">0:00 / --:--</div>
+      </div>
+      <div class="vis-wrap">
+        <canvas id="vis"></canvas>
+        <div id="visCss" class="vis-css"></div>
+      </div>
+    </div>
+    <div class="scanlines"></div>
+  </section>
+
+  <!-- STANDBY VIEW: logo (init.logo, when init.showLogo) → wordmark (init.standbyText) → laser line →
+       subtext (init.standbySubtext). Also the error fallback: the error line replaces the subtext. -->
+  <section id="standby" class="standby is-on">
+    <div class="glow glow-a"></div>
+    <div class="glow glow-b"></div>
+    <div class="glow glow-c"></div>
+    <div class="centre">
+      <img id="standbyLogo" class="logo" alt="" hidden>
+      <div id="standbyText" class="brand">Television</div>
+      <div class="laser"></div>
+      <div id="standbySub" class="mono sub">No signal</div>
+    </div>
+    <div class="vignette"></div>
+    <div class="scanlines"></div>
+    <div class="sweep"></div>
+    <div class="noise"></div>
+    <div id="clock" class="mono clock">--:--</div>
+  </section>
+
+  <script src="./dui-embed.js"></script>
+  <script src="./dui.js"></script>
+</body>
+</html>

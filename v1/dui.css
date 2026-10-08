@@ -1,0 +1,186 @@
+/* ============================================================================
+   In-world screen page (DUI)                                       html/dui.css
+   Deep dark ground, four-step ink, mono for measured things, the 135° brand
+   gradient only as a 2px laser line and as drifting glow blobs. System fonts
+   only — the DUI must never touch the network. The logo and the texts come
+   from Config.Branding (via the `init` message); the colours below are the
+   customer-editable block for the standby picture.
+   The page renders at 1280×720 and gets squashed onto TV textures seen from
+   a distance: big shapes, high contrast, generous tracking, no tiny text.
+   ============================================================================ */
+:root {
+  --bg: #0a0a0c;
+  --surface: #111114;
+  --line: rgba(255, 255, 255, .08);
+  --line-strong: rgba(255, 255, 255, .16);
+  --ink: #f5f5f6;
+  --ink-2: #b9b9c0;
+  --ink-3: #7c7c85;
+  --accent: #ec4899;
+  --accent-ink: #ff7db4;
+  --bad: #f87171;
+  --grad: linear-gradient(135deg, #9333ea 0%, #ec4899 50%, #ffa588 100%);
+  --font: -apple-system, "Segoe UI", Roboto, Inter, "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  --fade: 240ms;                      /* standby ↔ video / audio crossfade */
+  --ease: cubic-bezier(.4, 0, .2, 1);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: antialiased; user-select: none; cursor: none; }
+img { display: block; }
+[hidden] { display: none !important; }
+
+/* ── Stage: the single media element ───────────────────────────────────── */
+.stage { position: fixed; inset: 0; background: #000; }
+.stage video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+
+/* ── Full-screen views ───────────────────────────────────────────────────
+   They cross-fade over the stage (opacity, 240 ms) and get display:none once
+   faded out (dui.js setView), so their animations stop costing anything
+   while a video plays. */
+.audio, .standby {
+  position: fixed; inset: 0; overflow: hidden; background: var(--bg);
+  opacity: 0; transition: opacity var(--fade) var(--ease);
+}
+.audio.is-on, .standby.is-on { opacity: 1; }
+.audio { z-index: 2; }
+.standby { z-index: 3; }
+
+/* Drifting brand glow along the 135° axis: purple top-left → pink centre →
+   salmon bottom-right. Radial gradients fade by themselves (no filter: blur)
+   and only `transform` animates, so each blob is one cheap composited layer.
+   Loops are 13 / 15 / 17 s so the three never line up. */
+.glow { position: absolute; border-radius: 50%; pointer-events: none; }
+.glow-a {
+  left: -22vw; top: -40vw; width: 72vw; height: 72vw;
+  background: radial-gradient(circle, rgba(147, 51, 234, .55) 0%, rgba(147, 51, 234, 0) 62%);
+  animation: drift-a 17s ease-in-out infinite alternate;
+}
+.glow-b {
+  left: 28vw; top: -4vw; width: 56vw; height: 56vw;
+  background: radial-gradient(circle, rgba(236, 72, 153, .26) 0%, rgba(236, 72, 153, 0) 62%);
+  animation: drift-b 13s ease-in-out infinite alternate;
+}
+.glow-c {
+  right: -24vw; bottom: -44vw; width: 72vw; height: 72vw;
+  background: radial-gradient(circle, rgba(255, 165, 136, .42) 0%, rgba(255, 165, 136, 0) 62%);
+  animation: drift-c 15s ease-in-out infinite alternate;
+}
+@keyframes drift-a { to { transform: translate3d(12vw, 10vw, 0) scale(1.15); } }
+@keyframes drift-b { to { transform: translate3d(-10vw, 8vw, 0) scale(.85); } }
+@keyframes drift-c { to { transform: translate3d(-12vw, -9vw, 0) scale(1.2); } }
+
+/* ── The TV layer: vignette, scanlines, a slow sweep, faint noise ───────── */
+.vignette {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 42%, rgba(0, 0, 0, .62) 100%);
+}
+.scanlines {
+  position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0) 0 4px, rgba(0, 0, 0, .2) 4px 6px);
+}
+.sweep {
+  position: absolute; left: 0; right: 0; top: -18%; height: 18%; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, .035) 50%, rgba(255, 255, 255, 0));
+  animation: sweep 9s linear infinite;
+}
+@keyframes sweep { to { transform: translate3d(0, 660%, 0); } }
+/* Inline SVG turbulence tile (no file, no network); steps(1) jumps it to a new
+   offset every 240 ms — transform only, so the tile is never repainted. */
+.noise {
+  position: absolute; inset: -200px; pointer-events: none; opacity: .07;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") repeat;
+  animation: noise 1.2s steps(1) infinite;
+}
+@keyframes noise {
+  0%   { transform: translate3d(0, 0, 0); }
+  20%  { transform: translate3d(-70px, 40px, 0); }
+  40%  { transform: translate3d(50px, -90px, 0); }
+  60%  { transform: translate3d(-120px, -30px, 0); }
+  80%  { transform: translate3d(90px, 110px, 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+/* ── Standby: logo → wordmark → laser → subtext ─────────────────────────── */
+.centre {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+/* the configured logo (Config.Branding.logo), at most 18 % of the stage height */
+.logo { max-height: 18vh; max-width: 40vw; width: auto; height: auto; object-fit: contain; margin-bottom: 30px; }
+/* the wordmark: clean sans, wide tracking, no mono */
+.brand {
+  font-family: var(--font); font-weight: 600; font-size: 56px; line-height: 1.1;
+  letter-spacing: .26em; padding-left: .26em; /* padding balances the trailing tracking when centred */
+  text-transform: uppercase; color: var(--ink); text-align: center; max-width: 86%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* The laser line: the one gradient moment, 2px, slowly flowing through its stops. */
+.laser {
+  width: 200px; height: 2px; margin: 28px 0 24px; border-radius: 1px;
+  background: var(--grad); background-size: 200% 100%;
+  animation: flow 8s ease-in-out infinite alternate;
+}
+@keyframes flow { from { background-position: 0% 50%; } to { background-position: 100% 50%; } }
+.mono {
+  font-family: var(--mono); text-transform: uppercase;
+  letter-spacing: .32em; padding-left: .32em;
+  font-variant-numeric: tabular-nums;
+}
+.sub {
+  font-size: 17px; letter-spacing: .3em; color: var(--ink-3);
+  max-width: 72%; text-align: center; line-height: 1.5;
+}
+.sub.is-error { color: var(--bad); }
+.clock { position: absolute; right: 36px; bottom: 28px; font-size: 18px; letter-spacing: .14em; padding-left: 0; color: var(--ink-3); }
+
+/* ── Audio view: now-playing card ──────────────────────────────────────── */
+.card {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 70%; padding: 44px 52px 40px;
+  display: grid; grid-template-columns: 150px minmax(0, 1fr); grid-template-rows: auto auto;
+  column-gap: 44px; row-gap: 36px; align-items: center;
+  background: rgba(17, 17, 20, .94); border: 1px solid var(--line-strong); border-radius: 14px;
+}
+/* art slot: the configured logo, or a generic music glyph when there is none */
+.art { grid-column: 1; grid-row: 1; width: 150px; height: 150px; display: grid; place-items: center; }
+.mark { max-width: 150px; max-height: 150px; width: auto; height: auto; object-fit: contain; }
+.glyph {
+  width: 110px; height: 110px; padding: 22px; border-radius: 50%;
+  color: var(--accent-ink); background: rgba(236, 72, 153, .12); border: 1px solid var(--line-strong);
+}
+.meta { grid-column: 2; grid-row: 1; min-width: 0; }
+.label {
+  display: flex; align-items: center; gap: 12px;
+  font-family: var(--mono); font-size: 15px; letter-spacing: .32em; text-transform: uppercase; color: var(--accent-ink);
+}
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
+.name {
+  margin-top: 12px; font-size: 46px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.time { margin-top: 12px; font-family: var(--mono); font-size: 17px; letter-spacing: .12em; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* Visualizer: <canvas> fed by the AnalyserNode when the audio graph is hooked
+   (.is-live), 32 CSS-animated bars otherwise. Both go flat while paused. */
+.vis-wrap { grid-column: 1 / -1; grid-row: 2; position: relative; height: 120px; }
+#vis { display: none; width: 100%; height: 100%; }
+.audio.is-live #vis { display: block; }
+.vis-css { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 1.2%; }
+.audio.is-live .vis-css { display: none; }
+.vis-css span {
+  flex: 1 1 0; height: 100%; border-radius: 2px 2px 0 0;
+  background: linear-gradient(to top, #9333ea, #ec4899 55%, #ffa588);
+  transform-origin: bottom; transform: scaleY(.08);
+  animation: eq 1s ease-in-out infinite alternate;
+}
+@keyframes eq { from { transform: scaleY(.08); } to { transform: scaleY(1); } }
+.audio.is-paused .vis-css span { animation: none; }
+.audio.is-paused .dot { animation: none; opacity: .35; }
+
+/* YouTube / Twitch embeds (dui-embed.js) fill the stage like the video does. */
+.embed { position: absolute; inset: 0; background: #000; }
+.embed iframe, .embed .tv-embed { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
